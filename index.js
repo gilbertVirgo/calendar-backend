@@ -79,4 +79,6 @@ app.post("/calendar/:year/:month", async (req, res) => {
 	res.status(200).json({ success: true });
 });
 
-app.listen(4000, () => console.log(`app started on 4000`));
+app.listen(process.env.PORT, () =>
+	console.log(`app started on ${process.env.PORT}`)
+);
