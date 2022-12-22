@@ -1,84 +1,69 @@
-const fs = require("fs");
-const { DateTime } = require("luxon");
-const express = require("express");
-const app = express();
+const populateEmptyMonth = require("./populateEmptyMonth");
 
-app.use(express.json());
-app.use(require("cors")());
+const express = require("express"),
+	server = express(),
+	connect = require("./connect");
 
-const basePath = "./data";
+const cors = require("cors");
 
-const buildJSON = ({ year, month }) => {
-	const dateTime = DateTime.local(+year, +month);
+const { PORT } = process.env;
 
-	const firstDay = dateTime.startOf("month").weekday,
-		days = Array(dateTime.daysInMonth + firstDay)
-			.fill(null)
-			.map(
-				(v, index) =>
-					index >= firstDay && {
-						day: index + 1 - firstDay,
-						events: [],
-					}
-			);
+server.use(express.json());
+server.use(cors());
 
-	return {
-		year,
-		month,
-		days,
-	};
-};
+const init = async () => {
+	const db = await connect();
 
-const getPathsFromParams = ({ year, month }) => ({
-	dirPath: `${basePath}/${year}/${month}`,
-	filePath: `${basePath}/${year}/${month}/data.json`,
-});
+	server.get("/:year/:month", async ({ params }, res, next) => {
+		const { year, month } = params;
+		let data = await db.find({ year, month }).toArray();
 
-app.get("/calendar/:year/:month", async (req, res) => {
-	const { year, month } = req.params;
-	const { dirPath, filePath } = getPathsFromParams({ year, month });
+		if (!data.length) {
+			// Nothing here...
+			await populateEmptyMonth({ year, month }).on(db);
 
-	await fs.promises
-		.access(filePath, fs.constants.F_OK)
-		.catch(async (error) => {
-			console.log("Caught error", error);
-			console.log("Henceforth unrecorded month. Making new file...");
+			// refresh
+			data = await db.find({ year, month }).toArray();
+		}
 
-			await fs.promises.mkdir(dirPath, { recursive: true });
-			await fs.promises.writeFile(
-				filePath,
-				JSON.stringify(buildJSON({ year, month })),
-				{ encoding: "utf-8" }
-			);
-		});
-
-	const data = await fs.promises.readFile(filePath, { encoding: "utf-8" });
-
-	res.status(200).send({ success: true, data });
-});
-
-const isValidData = (data) => {
-	// Should probably validate it somehow.
-
-	return data !== null;
-};
-
-// For some reason, cannot get any req.body stuff coming through here
-app.post("/calendar/:year/:month", async (req, res) => {
-	const { year, month } = req.params;
-	const { filePath } = getPathsFromParams({ year, month });
-	const { data } = req.body;
-
-	if (!isValidData(data))
-		res.status(400).json({ success: false, message: "Invalid data." });
-
-	await fs.promises.writeFile(filePath, JSON.stringify(data), {
-		encoding: "utf-8",
+		res.locals.data = data;
+		next();
 	});
 
-	res.status(200).json({ success: true });
-});
+	server.get("/:year/:month/:day", async ({ params }, res, next) => {
+		const { year, month, day } = params;
 
-app.listen(process.env.PORT, () =>
-	console.log(`app started on ${process.env.PORT}`)
-);
+		const data = await db.findOne({ year, month, day });
+		res.locals.data = data;
+		next();
+	});
+
+	server.patch("/:year/:month/:day", async ({ params, body }, res, next) => {
+		const { year, month, day } = params;
+
+		const data = await db
+			.updateOne({ year, month, day }, { $set: body })
+			.catch(next);
+
+		res.locals.data = data;
+		next();
+	});
+
+	server.use((req, res, next) => {
+		res.status(200).json({
+			success: true,
+			data: res.locals.data,
+		});
+	});
+
+	server.use((err, req, res, next) => {
+		res.status(500).json({
+			success: false,
+			message: err.toString(),
+		});
+	});
+
+	server.listen(PORT, () => console.log(`Started server on ${PORT}`));
+};
+
+init();
